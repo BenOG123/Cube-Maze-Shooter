@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FPS with Enemies, Dynamic Lighting, Death Effects, and World Record</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        canvas { display: block; }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 20px;
+            height: 20px;
+            border: 2px solid white;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+        #instructions {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-family: Arial, sans-serif;
+        }
+        #score-container {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            color: white;
+            font-family: Arial, sans-serif;
+            text-align: right;
+        }
+        #score {
+            font-size: 24px;
+        }
+        #world-record {
+            font-size: 18px;
+            color: #ffd700; /* Gold color for world record */
+        }
+    </style>
+</head>
+<body>
+    <div id="crosshair"></div>
+    <div id="instructions">
+        WASD to move, Mouse to look around<br>
+        Click to shoot, R to regenerate map
+    </div>
+    <div id="score-container">
+        <div id="score">Score: 0</div>
+        <div id="world-record">World Record: 0</div>
+    </div>
+    <script>
+        // Set up the scene, camera, and renderer
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x000000);
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Enable shadow rendering
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+        // Player variables
+        const player = new THREE.Object3D();
+        scene.add(player);
+        player.add(camera);
+        
+        // Raycaster for shooting
+        const raycaster = new THREE.Raycaster();
+        
+        // Map variables
+        const mapSize = 20;
+        const wallHeight = 5;
+        let walls = [];
+        let enemies = [];
+        let score = 0;
+        let worldRecord = localStorage.getItem('worldRecord') || 0;
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0x404040);
+        scene.add(ambientLight);
+
+        const flashlight = new THREE.SpotLight(0xffffff, 1, 30, Math.PI / 6, 0.5, 1);
+        flashlight.position.set(0, 0, 0);
+        flashlight.target.position.set(0, 0, -1);
+        flashlight.castShadow = true;
+        camera.add(flashlight);
+        camera.add(flashlight.target);
+
+        // Generate random map
+        function generateMap() {
+            // Remove existing walls and enemies
+            walls.forEach(wall => scene.remove(wall));
+            enemies.forEach(enemy => scene.remove(enemy));
+            walls = [];
+            enemies = [];
+
+            const wallGeometry = new THREE.BoxGeometry(1, wallHeight, 1);
+            const wallMaterial = new THREE.MeshPhongMaterial({ color: 0x808080 });
+
+            for (let x = 0; x < mapSize; x++) {
+                for (let z = 0; z < mapSize; z++) {
+                    if (Math.random() < 0.3 || x === 0 || x === mapSize - 1 || z === 0 || z === mapSize - 1) {
+                        const wall = new THREE.Mesh(wallGeometry, wallMaterial);
+                        wall.position.set(x - mapSize / 2, wallHeight / 2, z - mapSize / 2);
+                        wall.castShadow = true;
+                        wall.receiveShadow = true;
+                        scene.add(wall);
+                        walls.push(wall);
+                    } else if (Math.random() < 0.1) {
+                        createEnemy(x - mapSize / 2, z - mapSize / 2);
+                    }
+                }
+            }
+
+            // Set player position
+            player.position.set(0, 1, 0);
+
+            // Reset score
+            score = 0;
+            updateScoreDisplay();
+        }
+
+        function createEnemy(x, z) {
+            const enemyGeometry = new THREE.BoxGeometry(0.8, 0.8, 0.8);
+            const enemyMaterial = new THREE.MeshPhongMaterial({ color: 0xff0000 });
+            const enemy = new THREE.Mesh(enemyGeometry, enemyMaterial);
+            enemy.position.set(x, 0.4, z);
+            enemy.castShadow = true;
+            enemy.receiveShadow = true;
+            scene.add(enemy);
+            enemies.push(enemy);
+        }
+
+        generateMap();
+
+        // First-person controls
+        let pitchObject = new THREE.Object3D();
+        camera.position.set(0, 1, 0);
+        pitchObject.add(camera);
+        let yawObject = new THREE.Object3D();
+        yawObject.add(pitchObject);
+        scene.add(yawObject);
+
+        document.addEventListener('mousemove', onMouseMove, false);
+        renderer.domElement.addEventListener('click', onMouseClick, false);
+
+        function onMouseMove(event) {
+            if (document.pointerLockElement === renderer.domElement) {
+                yawObject.rotation.y -= event.movementX * 0.002;
+                pitchObject.rotation.x -= event.movementY * 0.002;
+                pitchObject.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, pitchObject.rotation.x));
+            }
+        }
+
+        function onMouseClick() {
+            if (document.pointerLockElement !== renderer.domElement) {
+                renderer.domElement.requestPointerLock();
+            } else {
+                shootBullet();
+            }
+        }
+
+        function shootBullet() {
+            raycaster.setFromCamera(new THREE.Vector2(), camera);
+            const intersects = raycaster.intersectObjects([...walls, ...enemies]);
+            if (intersects.length > 0) {
+                const hitObject = intersects[0].object;
+                if (enemies.includes(hitObject)) {
+                    createDeathEffect(hitObject.position);
+                    scene.remove(hitObject);
+                    enemies = enemies.filter(enemy => enemy !== hitObject);
+                    score += 10;
+                    updateScoreDisplay();
+                }
+            }
+        }
+
+        function createDeathEffect(position) {
+            const particleCount = 20;
+            const geometry = new THREE.BufferGeometry();
+            const positions = new Float32Array(particleCount * 3);
+            const colors = new Float32Array(particleCount * 3);
+
+            for (let i = 0; i < particleCount; i++) {
+                positions[i * 3] = position.x;
+                positions[i * 3 + 1] = position.y;
+                positions[i * 3 + 2] = position.z;
+
+                colors[i * 3] = 1;
+                colors[i * 3 + 1] = 0;
+                colors[i * 3 + 2] = 0;
+            }
+
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+            const material = new THREE.PointsMaterial({ size: 0.1, vertexColors: true });
+            const particles = new THREE.Points(geometry, material);
+
+            scene.add(particles);
+
+            const animateParticles = () => {
+                const positions = particles.geometry.attributes.position.array;
+
+                for (let i = 0; i < particleCount; i++) {
+                    positions[i * 3] += (Math.random() - 0.5) * 0.1;
+                    positions[i * 3 + 1] += (Math.random() - 0.5) * 0.1;
+                    positions[i * 3 + 2] += (Math.random() - 0.5) * 0.1;
+                }
+
+                particles.geometry.attributes.position.needsUpdate = true;
+
+                if (particles.material.opacity > 0) {
+                    particles.material.opacity -= 0.02;
+                    requestAnimationFrame(animateParticles);
+                } else {
+                    scene.remove(particles);
+                }
+            };
+
+            animateParticles();
+        }
+
+        function updateScoreDisplay() {
+            document.getElementById('score').textContent = `Score: ${score}`;
+            if (score > worldRecord) {
+                worldRecord = score;
+                localStorage.setItem('worldRecord', worldRecord);
+                document.getElementById('world-record').textContent = `World Record: ${worldRecord}`;
+            }
+        }
+
+        // Initialize world record display
+        document.getElementById('world-record').textContent = `World Record: ${worldRecord}`;
+
+        // Movement
+        const velocity = new THREE.Vector3();
+        const direction = new THREE.Vector3();
+        let moveForward = false;
+        let moveBackward = false;
+        let moveLeft = false;
+        let moveRight = false;
+
+        const onKeyDown = function(event) {
+            switch (event.code) {
+                case 'KeyW': moveForward = true; break;
+                case 'KeyS': moveBackward = true; break;
+                case 'KeyA': moveLeft = true; break;
+                case 'KeyD': moveRight = true; break;
+                case 'KeyR': generateMap(); break;
+            }
+        };
+
+        const onKeyUp = function(event) {
+            switch (event.code) {
+                case 'KeyW': moveForward = false; break;
+                case 'KeyS': moveBackward = false; break;
+                case 'KeyA': moveLeft = false; break;
+                case 'KeyD': moveRight = false; break;
+            }
+        };
+
+        document.addEventListener('keydown', onKeyDown);
+        document.addEventListener('keyup', onKeyUp);
+
+        // Game loop
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (document.pointerLockElement === renderer.domElement) {
+                // Movement
+                direction.z = Number(moveForward) - Number(moveBackward);
+                direction.x = Number(moveRight) - Number(moveLeft);
+                direction.normalize();
+
+                velocity.z = direction.z * 0.1;
+                velocity.x = direction.x * 0.1;
+
+                yawObject.translateZ(velocity.z);
+                yawObject.translateX(velocity.x);
+
+                // Collision detection (very basic)
+                const playerRadius = 0.5;
+                walls.forEach(wall => {
+                    const dx = wall.position.x - yawObject.position.x;
+                    const dz = wall.position.z - yawObject.position.z;
+                    const distance = Math.sqrt(dx * dx + dz * dz);
+                    if (distance < playerRadius + 0.5) {
+                        const pushBack = new THREE.Vector3(dx, 0, dz).normalize().multiplyScalar(playerRadius + 0.5 - distance);
+                        yawObject.position.x -= pushBack.x;
+                        yawObject.position.z -= pushBack.z;
+                    }
+                });
+
+                // Move enemies
+                enemies.forEach(enemy => {
+                    enemy.position.x += (Math.random() - 0.5) * 0.05;
+                    enemy.position.z += (Math.random() - 0.5) * 0.05;
+                });
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        animate();
+
+        // Handle window resizing
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
